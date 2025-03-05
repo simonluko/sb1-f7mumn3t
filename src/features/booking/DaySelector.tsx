@@ -9,26 +9,34 @@ interface DaySelectorProps {
 const DaySelector: React.FC<DaySelectorProps> = ({ onSelectDay, selectedDate }) => {
   const [days, setDays] = useState<Array<{ date: Date; formatted: string; dayName: string; dayNumber: string }>>([]);
   const [startIndex, setStartIndex] = useState(0);
-  const visibleDays = 7; // Number of days visible at once
+  const [selectedMonth, setSelectedMonth] = useState<string>('');
+  const [selectedYear, setSelectedYear] = useState<string>('');
+  const visibleDays = 7;
 
   useEffect(() => {
-    generateDays();
+    const today = new Date();
+    setSelectedMonth((today.getMonth() + 1).toString().padStart(2, '0'));
+    setSelectedYear(today.getFullYear().toString());
+    generateDays(today.getFullYear(), today.getMonth());
   }, []);
 
-  const generateDays = () => {
-    const today = new Date();
+  const generateDays = (year: number, month: number) => {
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
     const nextDays = [];
     
-    // Generate the next 30 days
-    for (let i = 0; i < 30; i++) {
-      const date = new Date(today);
-      date.setDate(today.getDate() + i);
+    for (let i = 1; i <= lastDay.getDate(); i++) {
+      const date = new Date(year, month, i);
+      
+      // Skip dates before today
+      if (date < new Date(new Date().setHours(0, 0, 0, 0))) {
+        continue;
+      }
       
       const dayNames = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
       const dayName = dayNames[date.getDay()];
       const dayNumber = date.getDate().toString();
       
-      // Format date as YYYY-MM-DD for API
       const formatted = date.toISOString().split('T')[0];
       
       nextDays.push({
@@ -40,6 +48,18 @@ const DaySelector: React.FC<DaySelectorProps> = ({ onSelectDay, selectedDate }) 
     }
     
     setDays(nextDays);
+  };
+
+  const handleMonthChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setSelectedMonth(e.target.value);
+    generateDays(parseInt(selectedYear), parseInt(e.target.value) - 1);
+    setStartIndex(0);
+  };
+
+  const handleYearChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setSelectedYear(e.target.value);
+    generateDays(parseInt(e.target.value), parseInt(selectedMonth) - 1);
+    setStartIndex(0);
   };
 
   const handlePrevious = () => {
@@ -61,18 +81,61 @@ const DaySelector: React.FC<DaySelectorProps> = ({ onSelectDay, selectedDate }) 
       date.getFullYear() === today.getFullYear();
   };
 
-  const formatMonthYear = (date: Date) => {
-    return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-  };
+  const months = [
+    { value: '01', label: 'January' },
+    { value: '02', label: 'February' },
+    { value: '03', label: 'March' },
+    { value: '04', label: 'April' },
+    { value: '05', label: 'May' },
+    { value: '06', label: 'June' },
+    { value: '07', label: 'July' },
+    { value: '08', label: 'August' },
+    { value: '09', label: 'September' },
+    { value: '10', label: 'October' },
+    { value: '11', label: 'November' },
+    { value: '12', label: 'December' }
+  ];
+
+  const years = Array.from({ length: 2 }, (_, i) => (new Date().getFullYear() + i).toString());
 
   const visibleDaysArray = days.slice(startIndex, startIndex + visibleDays);
-  const currentMonthYear = visibleDaysArray.length > 0 ? formatMonthYear(visibleDaysArray[0].date) : '';
 
   return (
     <div className="mb-8">
       <div className="flex justify-between items-center mb-4">
         <h3 className="text-xl font-medium">Select Date</h3>
-        <div className="text-gray-300">{currentMonthYear}</div>
+        <div className="flex gap-2">
+          <select
+            value={selectedMonth}
+            onChange={handleMonthChange}
+            className="bg-gray-800/50 border border-gray-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-white transition-colors"
+          >
+            {months.map(month => (
+              <option 
+                key={month.value} 
+                value={month.value}
+                className="bg-gray-900"
+              >
+                {month.label}
+              </option>
+            ))}
+          </select>
+          <select
+            value={selectedYear}
+            onChange={handleYearChange}
+            className="bg-gray-800/50 border border-gray-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-white transition-colors"
+          >
+            {years.map(year => (
+              <option 
+                key={year} 
+                value={year}
+                className="bg-gray-900"
+              >
+                {year}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
       
       <div className="flex items-center">

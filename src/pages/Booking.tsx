@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Calendar, Clock, MapPin, User, Mail, Phone, CheckCircle, ArrowRight, ArrowLeft, Sparkles, AlertCircle } from 'lucide-react';
+import { Calendar, Clock, MapPin, User, Mail, Phone, CheckCircle, ArrowRight, ArrowLeft, Sparkles, AlertCircle, FileText, Clock3 } from 'lucide-react';
 import Logo from '../components/Logo';
 import { Link } from 'react-router-dom';
 import BookingConfirmation from '../features/booking/BookingConfirmation';
 import { FETCH_TIMES_WEBHOOK, SUBMIT_BOOKING_WEBHOOK, services } from '../features/booking/constants';
-import { formatDateTimeForWebhook, generateDefaultTimeSlots, validateIrishPhone, formatDateForDisplay, parseWebhookTimeSlots, formatSelectedServices, formatTimeForDisplay } from '../features/booking/utils';
+import { formatDateTimeForWebhook, generateDefaultTimeSlots, validateIrishPhone, formatDateForDisplay, parseWebhookTimeSlots, formatSelectedServices, formatTimeForDisplay, calculateEndTimeAndDuration } from '../features/booking/utils';
 import DaySelector from '../features/booking/DaySelector';
 import TimeSlotGrid from '../features/booking/TimeSlotGrid';
 
@@ -19,6 +19,9 @@ const Booking: React.FC = () => {
   const [standardizedDate, setStandardizedDate] = useState<string>('');
   const [standardizedTime, setStandardizedTime] = useState<string>('');
   const [location, setLocation] = useState<string>('');
+  const [videoIdeas, setVideoIdeas] = useState<string>('');
+  const [productionDuration, setProductionDuration] = useState<string>('');
+  const [boothDuration, setBoothDuration] = useState<string>('');
   const [formData, setFormData] = useState({
     firstName: '',
     lastName: '',
@@ -33,7 +36,9 @@ const Booking: React.FC = () => {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [availableTimeSlots, setAvailableTimeSlots] = useState<{time: string, available: boolean}[]>([]);
   const [isLoadingTimeSlots, setIsLoadingTimeSlots] = useState(false);
-  
+  const [bookingStatus, setBookingStatus] = useState<'OK' | 'NO_TIME'>('OK');
+  const [selectedDateISO, setSelectedDateISO] = useState<string>('');
+
   useEffect(() => {
     const handleScroll = () => {
       setIsScrolled(window.scrollY > 50);
@@ -42,23 +47,25 @@ const Booking: React.FC = () => {
     window.addEventListener('scroll', handleScroll);
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
-  
-  // Fetch available time slots when date changes or services are selected
+
   useEffect(() => {
     if (standardizedDate && selectedServices.length > 0 && currentStep === 2) {
       fetchAvailableTimeSlots(standardizedDate);
     }
   }, [standardizedDate, currentStep]);
-  
+
   const fetchAvailableTimeSlots = async (selectedDate: string) => {
     setIsLoadingTimeSlots(true);
     try {
+      // Convert selected date to ISO format (YYYY-MM-DD)
+      const dateISO = new Date(selectedDate).toISOString().split('T')[0];
+      setSelectedDateISO(dateISO);
+      
       const formattedServices = formatSelectedServices(selectedServices, services);
       
-      // Prepare data for webhook
       const webhookData = {
-        date: selectedDate,
-        ...formattedServices, // Add services as individual properties
+        date: dateISO,
+        ...formattedServices,
         timestamp: new Date().toISOString(),
         source: 'Touch Media Website - Booking Page Time Slot Request'
       };
@@ -76,55 +83,20 @@ const Booking: React.FC = () => {
       if (!response.ok) throw new Error('Failed to fetch time slots');
 
       const data = await response.json();
-      console.log('Received webhook response:', data);
+      console.log('📥 RAW WEBHOOK RESPONSE:', JSON.stringify(data, null, 2));
       
-      // Extract booked times for the selected date
-      let timeSlots = [];
-
-      if (data && data.bookedTimes && Array.isArray(data.bookedTimes)) {
-        // Create a Set of booked times for faster lookup
-        const bookedTimesSet = new Set(
-          data.bookedTimes.map((time: string) => 
-            time.includes('M') ? formatTimeForStorage(time) : time
-          )
-        );
-        
-        // Generate all possible time slots in 30-minute intervals (09:00 - 19:30)
-        const slots = [];
-        for (let hour = 9; hour < 20; hour++) {
-          for (let minute of [0, 30]) {
-            const time = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
-            
-            // If the time is booked, mark it as unavailable
-            slots.push({
-              time,
-              available: !bookedTimesSet.has(time)
-            });
-          }
-        }
-        
-        timeSlots = slots;
-      } else {
-        // Use the parseWebhookTimeSlots utility to handle other response formats
-        timeSlots = parseWebhookTimeSlots(data);
-      }
+      const timeSlots = parseWebhookTimeSlots(data, dateISO);
       
-      if (timeSlots.length > 0) {
-        setAvailableTimeSlots(timeSlots);
-      } else {
-        // Fallback to default time slots if no valid slots were parsed
-        setAvailableTimeSlots(generateDefaultTimeSlots());
-        console.log('Using default time slots as no valid slots were parsed');
-      }
+      console.log('✅ FINAL AVAILABLE TIME SLOTS:', timeSlots);
+      setAvailableTimeSlots(timeSlots);
     } catch (error) {
-      console.error('Error fetching time slots:', error);
-      // Fallback to default time slots on error
+      console.error('❌ ERROR FETCHING TIME SLOTS:', error);
       setAvailableTimeSlots(generateDefaultTimeSlots());
     } finally {
       setIsLoadingTimeSlots(false);
     }
   };
-  
+
   const toggleService = (serviceId: string) => {
     setSelectedServices(prev => {
       if (prev.includes(serviceId)) {
@@ -134,34 +106,27 @@ const Booking: React.FC = () => {
       }
     });
   };
-  
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     
     if (name === 'phone') {
-      // Allow only numbers and spaces for phone input
       const sanitizedValue = value.replace(/[^0-9\s]/g, '');
       
-      // Format the phone number with or without spaces
       let formattedValue = sanitizedValue;
       
-      // Remove all spaces first
       const digitsOnly = sanitizedValue.replace(/\s/g, '');
       
-      // If the user is typing without spaces, don't add them automatically
       if (value.includes(' ') || sanitizedValue.length > value.length) {
-        // User is using spaces or deleting, format with spaces
         if (digitsOnly.length > 3 && digitsOnly.length <= 6) {
           formattedValue = `${digitsOnly.slice(0, 3)} ${digitsOnly.slice(3)}`;
         } else if (digitsOnly.length > 6) {
           formattedValue = `${digitsOnly.slice(0, 3)} ${digitsOnly.slice(3, 6)} ${digitsOnly.slice(6, 10)}`;
         }
       } else {
-        // User is typing without spaces, keep it that way
         formattedValue = digitsOnly;
       }
       
-      // Validate the phone number (both with and without spaces)
       const phoneRegexWithSpaces = /^08[0-9]\s[0-9]{3}\s[0-9]{4}$/;
       const phoneRegexNoSpaces = /^08[0-9][0-9]{7}$/;
       
@@ -185,9 +150,8 @@ const Booking: React.FC = () => {
       }));
     }
   };
-  
+
   const handleDateChange = (date: string) => {
-    // Send webhook when date is selected
     const webhookData = {
       date,
       ...formatSelectedServices(selectedServices, services),
@@ -196,7 +160,6 @@ const Booking: React.FC = () => {
       type: 'availability_check'
     };
     
-    // Send webhook
     fetch(FETCH_TIMES_WEBHOOK, {
       method: 'POST',
       headers: {
@@ -211,22 +174,20 @@ const Booking: React.FC = () => {
     setStandardizedDate(date);
     setDateError(null);
     
-    // Reset time selection when date changes
     setTimeInput('');
     setStandardizedTime('');
     setTimeError(null);
   };
-  
+
   const handleTimeSlotSelect = (time: string) => {
     setTimeInput(time);
     setStandardizedTime(time);
     setTimeError(null);
   };
-  
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    // Validate phone number before submission
     const phoneRegexWithSpaces = /^08[0-9]\s[0-9]{3}\s[0-9]{4}$/;
     const phoneRegexNoSpaces = /^08[0-9][0-9]{7}$/;
     
@@ -238,7 +199,6 @@ const Booking: React.FC = () => {
       return;
     }
     
-    // Validate date and time
     if (!standardizedDate) {
       setDateError('Please enter a valid date');
       return;
@@ -252,34 +212,38 @@ const Booking: React.FC = () => {
     setIsSubmitting(true);
     setSubmitError(null);
     
-    // Format services individually instead of as an array
     const formattedServices = formatSelectedServices(selectedServices, services);
     
-    // Format date for better readability
-    const formattedDate = standardizedDate ? formatDateForDisplay(standardizedDate) : '';
-    
-    // Format date and time for webhook
     const formattedDateTime = formatDateTimeForWebhook(standardizedDate, standardizedTime);
     
-    // Prepare booking data
+    // Calculate end time and duration based on selected duration
+    const durationToUse = selectedServices.includes('360-booth') ? boothDuration : productionDuration;
+    const { endTime, duration } = calculateEndTimeAndDuration(formattedDateTime, durationToUse || '1 hour');
+    
     const bookingData = {
       firstName: formData.firstName,
       lastName: formData.lastName,
       fullName: `${formData.firstName} ${formData.lastName}`,
       email: formData.email,
       phone: formData.phone,
-      ...formattedServices, // Add services as individual properties
-      date: standardizedDate, // Send ISO date format to server
+      ...formattedServices,
+      date: standardizedDate,
       time: standardizedTime,
-      dateTime: formattedDateTime, // ISO format for Google Calendar
+      dateTime: formattedDateTime,
+      endTime: endTime,
+      duration: duration,
       location: location,
+      videoIdeas: videoIdeas || 'No video ideas provided',
+      productionDuration: productionDuration || 'Not specified',
+      boothDuration: boothDuration || 'Not specified',
       message: formData.message,
       source: 'Touch Media Website',
       timestamp: new Date().toISOString()
     };
     
     try {
-      // Send booking data to Make.com webhook
+      console.log('Sending booking data with dateTime:', formattedDateTime);
+      
       const response = await fetch(SUBMIT_BOOKING_WEBHOOK, {
         method: 'POST',
         headers: {
@@ -300,9 +264,17 @@ const Booking: React.FC = () => {
       
       const result = await response.json();
       
-      // Also send the data to the original webhook for backward compatibility
+      // Check webhook response status
+      if (result.status === 'NO_TIME') {
+        setIsSubmitting(false);
+        setBookingStatus('NO_TIME');
+        setShowConfirmation(true);
+        return;
+      }
+      
+      setBookingStatus('OK');
+      
       try {
-        // Format services for the API endpoint
         const serviceNames = selectedServices.map(id => 
           services.find(s => s.id === id)?.name
         );
@@ -321,25 +293,29 @@ const Booking: React.FC = () => {
             date: standardizedDate,
             time: standardizedTime,
             location: location,
+            videoIdeas: videoIdeas,
+            productionDuration: productionDuration,
+            boothDuration: boothDuration,
             message: formData.message
           }),
         });
       } catch (apiError) {
         console.error('Error sending data to API endpoint:', apiError);
-        // Continue with the booking process even if the API endpoint fails
       }
       
       setIsSubmitting(false);
       setIsSubmitted(true);
       setShowConfirmation(true);
       
-      // Reset form after submission
       setSelectedServices([]);
       setDateInput('');
       setTimeInput('');
       setStandardizedDate('');
       setStandardizedTime('');
       setLocation('');
+      setVideoIdeas('');
+      setProductionDuration('');
+      setBoothDuration('');
       setFormData({
         firstName: '',
         lastName: '',
@@ -353,18 +329,19 @@ const Booking: React.FC = () => {
       setIsSubmitting(false);
       setSubmitError('There was a problem submitting your booking. Please try again or contact us directly.');
       
-      // For demo purposes, still show success if server is not available
       if (!navigator.onLine || (error instanceof Error && error.message.includes('Failed to fetch'))) {
         setIsSubmitted(true);
         setShowConfirmation(true);
         
-        // Reset form after submission
         setSelectedServices([]);
         setDateInput('');
         setTimeInput('');
         setStandardizedDate('');
         setStandardizedTime('');
         setLocation('');
+        setVideoIdeas('');
+        setProductionDuration('');
+        setBoothDuration('');
         setFormData({
           firstName: '',
           lastName: '',
@@ -376,40 +353,40 @@ const Booking: React.FC = () => {
       }
     }
   };
-  
+
   const nextStep = () => {
     if (currentStep === 1 && selectedServices.length === 0) {
-      return; // Don't proceed if no service is selected
+      return;
     }
     
     if (currentStep === 1 && selectedServices.length > 0) {
-      // Send webhook when moving from service selection to date/time selection
       sendServiceSelectionWebhook();
     }
     
     if (currentStep === 2 && (!standardizedDate || !standardizedTime)) {
-      // Show validation errors if needed
       if (!standardizedDate) {
         setDateError('Please enter a valid date');
       }
       if (!standardizedTime) {
         setTimeError('Please enter a valid time');
       }
-      return; // Don't proceed if date or time is not valid
+      return;
     }
     if (currentStep === 3 && !location) {
-      return; // Don't proceed if location is not provided
+      return;
     }
+    
+    if (currentStep === 3 && selectedServices.includes('videography') && !videoIdeas) {
+      console.log('User proceeded without providing video ideas for videography booking');
+    }
+    
     setCurrentStep(prev => Math.min(prev + 1, 4));
   };
-  
-  // Send webhook when services are selected and user clicks Next
+
   const sendServiceSelectionWebhook = async () => {
     try {
-      // Format services individually
       const formattedServices = formatSelectedServices(selectedServices, services);
       
-      // Prepare webhook data
       const webhookData = {
         ...formattedServices,
         timestamp: new Date().toISOString(),
@@ -420,7 +397,6 @@ const Booking: React.FC = () => {
       
       console.log('Sending service selection webhook:', webhookData);
       
-      // Send webhook
       await fetch(FETCH_TIMES_WEBHOOK, {
         method: 'POST',
         headers: {
@@ -432,32 +408,57 @@ const Booking: React.FC = () => {
       console.log('Service selection webhook sent successfully');
     } catch (error) {
       console.error('Error sending service selection webhook:', error);
-      // Continue with the booking process even if the webhook fails
     }
   };
-  
+
   const prevStep = () => {
     setCurrentStep(prev => Math.max(prev - 1, 1));
   };
-  
+
   const isNextDisabled = () => {
     if (currentStep === 1) return selectedServices.length === 0;
     if (currentStep === 2) return !standardizedDate || !standardizedTime;
     if (currentStep === 3) return !location;
     return false;
   };
-  
+
   const isSubmitDisabled = () => {
     return !formData.firstName || !formData.lastName || !formData.email || !formData.phone || phoneError !== null || isSubmitting;
   };
-  
+
   const handleCloseConfirmation = () => {
     setShowConfirmation(false);
   };
-  
+
+  const isVideographySelected = () => {
+    return selectedServices.includes('videography');
+  };
+
+  const is360BoothSelected = () => {
+    return selectedServices.includes('360-booth');
+  };
+
+  const formatTimeForStorage = (time: string): string => {
+    if (!time) return '';
+    
+    if (time.match(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/)) {
+      return time;
+    }
+    
+    const match = time.match(/^(\d+):(\d+)\s*(AM|PM)$/i);
+    if (!match) return time;
+    
+    let [_, hours, minutes, period] = match;
+    let hour = parseInt(hours, 10);
+    
+    if (period.toUpperCase() === 'PM' && hour < 12) hour += 12;
+    if (period.toUpperCase() === 'AM' && hour === 12) hour = 0;
+    
+    return `${hour.toString().padStart(2, '0')}:${minutes.padStart(2, '0')}`;
+  };
+
   return (
     <div className="min-h-screen bg-black text-white">
-      {/* Navigation */}
       <nav 
         className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 
           ${isScrolled ? 'bg-black/90 backdrop-blur-sm py-3' : 'bg-transparent py-5'}`}
@@ -469,7 +470,6 @@ const Booking: React.FC = () => {
             </Link>
           </div>
           
-          {/* Desktop Navigation */}
           <div className="hidden md:flex space-x-8">
             <Link to="/#services" className="text-white hover:text-gray-300 transition-colors relative group">
               Services
@@ -495,14 +495,12 @@ const Booking: React.FC = () => {
             </span>
           </div>
           
-          {/* Mobile Menu Button */}
           <Link to="/" className="md:hidden text-white px-4 py-2 border border-white/30 rounded-md hover:bg-white/10 transition-colors">
             Back to Home
           </Link>
         </div>
       </nav>
 
-      {/* Booking Section */}
       <section className="pt-32 pb-20 bg-black">
         <div className="container mx-auto px-4">
           <div className="max-w-4xl mx-auto">
@@ -528,7 +526,6 @@ const Booking: React.FC = () => {
               </div>
             ) : (
               <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-800 overflow-hidden">
-                {/* Progress Steps */}
                 <div className="flex border-b border-gray-800">
                   <div 
                     className={`flex-1 py-4 px-4 text-center ${currentStep >= 1 ? 'text-white' : 'text-gray-500'}`}
@@ -564,10 +561,8 @@ const Booking: React.FC = () => {
                   </div>
                 </div>
                 
-                {/* Form Content */}
                 <div className="p-8">
                   <form onSubmit={handleSubmit}>
-                    {/* Step 1: Service Selection */}
                     {currentStep === 1 && (
                       <div className="animate-fade-in">
                         <h3 className="text-2xl font-light mb-6">Select Service(s)</h3>
@@ -635,13 +630,11 @@ const Booking: React.FC = () => {
                       </div>
                     )}
                     
-                    {/* Step 2: Date & Time Selection */}
                     {currentStep === 2 && (
                       <div className="animate-fade-in">
                         <h3 className="text-2xl font-light mb-6">Select Date & Time</h3>
                         <p className="text-gray-400 mb-8">Choose your preferred date and time for the session.</p>
                         
-                        {/* Calendar Day Selector */}
                         <DaySelector 
                           onSelectDay={handleDateChange}
                           selectedDate={standardizedDate}
@@ -653,7 +646,6 @@ const Booking: React.FC = () => {
                           </div>
                         )}
                         
-                        {/* Time Slot Grid */}
                         {standardizedDate && (
                           <div className="mt-8">
                             <TimeSlotGrid 
@@ -671,7 +663,6 @@ const Booking: React.FC = () => {
                           </div>
                         )}
                         
-                        {/* Selected Date & Time Summary */}
                         {standardizedDate && standardizedTime && (
                           <div className="bg-gray-800/30 border border-gray-700 rounded-lg p-4 mt-8">
                             <h4 className="text-lg font-medium mb-2">Your Selection</h4>
@@ -694,7 +685,6 @@ const Booking: React.FC = () => {
                       </div>
                     )}
                     
-                    {/* Step 3: Location */}
                     {currentStep === 3 && (
                       <div className="animate-fade-in">
                         <h3 className="text-2xl font-light mb-6">Specify Location</h3>
@@ -713,6 +703,52 @@ const Booking: React.FC = () => {
                             required
                           />
                         </div>
+                        
+                        {/* Video Ideas Section - Only show if videography is selected */}
+                        {isVideographySelected() && (
+                          <div className="mb-6">
+                            <label className="block text-white mb-2 flex items-center">
+                              <FileText size={18} className="mr-2" /> Video Content Ideas
+                            </label>
+                            <textarea
+                              value={videoIdeas}
+                              onChange={(e) => setVideoIdeas(e.target.value)}
+                              placeholder="Describe your video ideas, concepts, or specific shots you'd like us to capture"
+                              rows={4}
+                              className="w-full bg-gray-800/50 border border-gray-700 rounded-lg p-4 text-white placeholder-gray-500 focus:outline-none focus:border-white transition-colors"
+                            />
+                            <p className="text-gray-400 text-xs mt-1">
+                              Sharing your ideas helps us prepare better for your shoot and ensures we capture exactly what you need.
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Duration Selection for 360 Booth */}
+                        {is360BoothSelected() && (
+                          <div className="mb-6">
+                            <label className="block text-white mb-2 flex items-center">
+                              <Clock3 size={18} className="mr-2" /> Duration of Booth Rental
+                            </label>
+                            <select
+                              value={boothDuration}
+                              onChange={(e) => setBoothDuration(e.target.value)}
+                              className="w-full bg-gray-800/50 border border-gray-700 rounded-lg p-4 text-white focus:outline-none focus:border-white transition-colors"
+                            >
+                              <option value="" className="bg-gray-900">Select Duration</option>
+                              <option value="1 hour" className="bg-gray-900">1 hour</option>
+                              <option value="2 hours" className="bg-gray-900">2 hours</option>
+                              <option value="3 hours" className="bg-gray-900">3 hours</option>
+                              <option value="4 hours" className="bg-gray-900">4 hours</option>
+                              <option value="5 hours" className="bg-gray-900">5 hours (Discounted)</option>
+                              <option value="6 hours" className="bg-gray-900">6 hours (Discounted)</option>
+                              <option value="Full day (8 hours)" className="bg-gray-900">Full day - 8 hours (Discounted)</option>
+                              <option value="Multiple days" className="bg-gray-900">Multiple days</option>
+                            </select>
+                            <p className="text-gray-400 text-xs mt-1">
+                              This helps us allocate the right amount of time for your event. Bookings of 5+ hours receive special discounted rates.
+                            </p>
+                          </div>
+                        )}
                         
                         <div className="bg-gray-800/30 border border-gray-700 rounded-lg p-4 mb-6">
                           <h4 className="text-lg font-medium mb-2">Location Options:</h4>
@@ -734,7 +770,6 @@ const Booking: React.FC = () => {
                       </div>
                     )}
                     
-                    {/* Step 4: Contact Details */}
                     {currentStep === 4 && (
                       <div className="animate-fade-in">
                         <h3 className="text-2xl font-light mb-6">Your Details</h3>
@@ -814,6 +849,33 @@ const Booking: React.FC = () => {
                           </div>
                         </div>
                         
+                        {/* Production Duration Dropdown */}
+                        {(selectedServices.includes('videography') || selectedServices.includes('photography')) && (
+                          <div className="mb-6">
+                            <label className="block text-white mb-2 flex items-center">
+                              <Clock3 size={18} className="mr-2" /> Duration of Production
+                            </label>
+                            <select
+                              value={productionDuration}
+                              onChange={(e) => setProductionDuration(e.target.value)}
+                              className="w-full bg-gray-800/50 border border-gray-700 rounded-lg p-4 text-white focus:outline-none focus:border-white transition-colors"
+                            >
+                              <option value="" className="bg-gray-900">Select Duration</option>
+                              <option value="1 hour" className="bg-gray-900">1 hour</option>
+                              <option value="2 hours" className="bg-gray-900">2 hours</option>
+                              <option value="3 hours" className="bg-gray-900">3 hours</option>
+                              <option value="4 hours" className="bg-gray-900">4 hours</option>
+                              <option value="5 hours" className="bg-gray-900">5 hours</option>
+                              <option value="6 hours" className="bg-gray-900">6 hours</option>
+                              <option value="Full day (8 hours)" className="bg-gray-900">Full day (8 hours)</option>
+                              <option value="Multiple days" className="bg-gray-900">Multiple days</option>
+                            </select>
+                            <p className="text-gray-400 text-xs mt-1">
+                              This helps us allocate the right amount of time for your project. Longer durations may require additional fees.
+                            </p>
+                          </div>
+                        )}
+                        
                         <div className="mb-8">
                           <label className="block text-white mb-2">Additional Information (Optional)</label>
                           <textarea
@@ -851,12 +913,29 @@ const Booking: React.FC = () => {
                               <span className="text-gray-400">Location:</span>
                               <span className="text-white">{location}</span>
                             </div>
+                            {productionDuration && (
+                              <div className="flex justify-between">
+                                <span className="text-gray-400">Duration:</span>
+                                <span className="text-white">{productionDuration}</span>
+                              </div>
+                            )}
+                            {is360BoothSelected() && boothDuration && (
+                              <div className="flex justify-between">
+                                <span className="text-gray-400">Booth Duration:</span>
+                                <span className="text-white">{boothDuration}</span>
+                              </div>
+                            )}
+                            {isVideographySelected() && videoIdeas && (
+                              <div className="flex justify-between">
+                                <span className="text-gray-400">Video Ideas:</span>
+                                <span className="text-white max-w-xs text-right">{videoIdeas.length > 50 ? `${videoIdeas.substring(0, 50)}...` : videoIdeas}</span>
+                              </div>
+                            )}
                           </div>
                         </div>
                       </div>
                     )}
                     
-                    {/* Navigation Buttons */}
                     <div className="flex justify-between mt-8">
                       {currentStep > 1 ? (
                         <button
@@ -867,7 +946,7 @@ const Booking: React.FC = () => {
                           <ArrowLeft size={18} className="mr-2" /> Back
                         </button>
                       ) : (
-                        <div></div> // Empty div to maintain flex spacing
+                        <div></div>
                       )}
                       
                       {currentStep < 4 ? (
@@ -901,16 +980,17 @@ const Booking: React.FC = () => {
         </div>
       </section>
 
-      {/* Footer */}
       <footer className="py-8 bg-black border-t border-gray-900">
         <div className="container mx-auto px-4 text-center">
           <p className="text-gray-500">© {new Date().getFullYear()} Touch Media Ltd. All rights reserved.</p>
         </div>
       </footer>
       
-      {/* Booking Confirmation Modal */}
       {showConfirmation && (
-        <BookingConfirmation onClose={handleCloseConfirmation} />
+        <BookingConfirmation 
+          onClose={handleCloseConfirmation} 
+          status={bookingStatus} 
+        />
       )}
     </div>
   );

@@ -1,28 +1,63 @@
 import { BUSINESS_HOURS } from './constants';
 
 /**
+ * Calculates end time and duration based on start time and selected duration
+ * @param startTime ISO datetime string
+ * @param durationString Duration string (e.g., "3 hours", "Full day (8 hours)")
+ * @returns Object containing end time and formatted duration
+ */
+export const calculateEndTimeAndDuration = (startTime: string, durationString: string): { 
+  endTime: string;
+  duration: string;
+} => {
+  // Extract hours from duration string
+  let hours = 0;
+  
+  if (durationString.includes('Full day')) {
+    hours = 8;
+  } else if (durationString.includes('Multiple days')) {
+    hours = 24;
+  } else {
+    const match = durationString.match(/(\d+)\s*hours?/);
+    if (match) {
+      hours = parseInt(match[1], 10);
+    }
+  }
+  
+  // Calculate end time
+  const startDate = new Date(startTime);
+  const endDate = new Date(startDate.getTime() + hours * 60 * 60 * 1000);
+  
+  // Format end time to match ISO 8601 format with Z suffix
+  const endTimeFormatted = endDate.toISOString().split('.')[0] + 'Z';
+  
+  // Format duration as HH:mm
+  const durationFormatted = `${hours.toString().padStart(2, '0')}:00`;
+  
+  return {
+    endTime: endTimeFormatted,
+    duration: durationFormatted
+  };
+};
+
+/**
  * Formats a date and time for webhook submission
  * @param date ISO date string (YYYY-MM-DD)
- * @param time Time string (e.g., "2:30 PM" or "14:30")
+ * @param time Time string (e.g., "09:30" or "14:30")
  * @returns ISO datetime string for Google Calendar
  */
 export const formatDateTimeForWebhook = (date: string, time: string): string => {
-  // Parse the time string
-  let hours = 0;
-  let minutes = 0;
-  
-  // Parse 24-hour time format (e.g., "14:30")
-  const [hourStr, minuteStr] = time.split(':');
-  hours = parseInt(hourStr, 10);
-  minutes = parseInt(minuteStr, 10);
-  
-  // Create a date object from the date string
-  const bookingDate = new Date(date);
-  // Set the hours and minutes
-  bookingDate.setHours(hours, minutes, 0, 0);
-  
-  // Return ISO string format
-  return bookingDate.toISOString();
+  try {
+    // Ensure time is in 24-hour format with leading zeros
+    const [hours, minutes] = time.split(':').map(num => num.padStart(2, '0'));
+
+    // Format directly to ISO 8601 format with Z suffix to indicate UTC
+    return `${date}T${hours}:${minutes}:00Z`;
+  } catch (error) {
+    console.error('Error formatting date/time:', error);
+    // Return a fallback format if parsing fails
+    return `${date}T${time}:00.000Z`;
+  }
 };
 
 /**
@@ -31,29 +66,33 @@ export const formatDateTimeForWebhook = (date: string, time: string): string => 
  */
 // Helper function to check if a time slot is before the minimum buffer time
 const isBeforeMinimumBuffer = (timeSlot: string, date: string): boolean => {
+  // Get current time in UTC
   const now = new Date();
-  const selectedDate = new Date(date);
+  const utcNow = new Date(now.getTime() + now.getTimezoneOffset() * 60000);
+  
+  // Convert selected date to UTC
+  const selectedDate = new Date(date + 'T00:00:00Z');
   
   // If the selected date is in the future, all time slots are valid
-  if (selectedDate.getDate() > now.getDate() || 
-      selectedDate.getMonth() > now.getMonth() || 
-      selectedDate.getFullYear() > now.getFullYear()) {
+  if (selectedDate.getUTCDate() > utcNow.getUTCDate() || 
+      selectedDate.getUTCMonth() > utcNow.getUTCMonth() || 
+      selectedDate.getUTCFullYear() > utcNow.getUTCFullYear()) {
     return false;
   }
   
   // Convert timeSlot to a Date object for the selected date
   const [hours, minutes] = timeSlot.split(':').map(Number);
-  const slotTime = new Date(selectedDate);
-  slotTime.setHours(hours, minutes, 0, 0);
+  const slotTime = new Date(selectedDate.getTime());
+  slotTime.setUTCHours(hours, minutes, 0, 0);
   
   // Calculate the minimum buffer time (current time + 30 minutes)
-  const bufferTime = new Date(now);
-  bufferTime.setMinutes(bufferTime.getMinutes() + 30);
+  const bufferTime = new Date(utcNow.getTime());
+  bufferTime.setUTCMinutes(bufferTime.getUTCMinutes() + 30);
   
-  // Round up to the next 15-minute interval
-  const remainder = bufferTime.getMinutes() % 15;
+  // Round up to the next 30-minute interval
+  const remainder = bufferTime.getUTCMinutes() % 30;
   if (remainder > 0) {
-    bufferTime.setMinutes(bufferTime.getMinutes() + (15 - remainder));
+    bufferTime.setUTCMinutes(bufferTime.getUTCMinutes() + (30 - remainder));
   }
   
   return slotTime < bufferTime;
@@ -70,8 +109,8 @@ export const generateDefaultTimeSlots = () => {
   for (let hour = start; hour < end; hour++) {
     const displayHour = hour.toString().padStart(2, '0');
     
-    // Generate slots in 15-minute intervals
-    for (let minute = 0; minute < 60; minute += 15) {
+    // Generate slots in 30-minute intervals
+    for (let minute = 0; minute < 60; minute += 30) {
       const time = `${displayHour}:${minute.toString().padStart(2, '0')}`;
       
       // Check if this time slot is before the minimum buffer time
@@ -90,29 +129,24 @@ export const generateDefaultTimeSlots = () => {
 export const formatTimeForDisplay = (time: string): string => {
   if (!time) return '';
   
-  // Parse the time string
   const [hours, minutes] = time.split(':').map(Number);
   
-  // Format in 24-hour time
   return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
 };
 
 export const formatTimeForStorage = (time: string): string => {
   if (!time) return '';
   
-  // If already in 24-hour format, return as is
   if (time.match(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/)) {
     return time;
   }
   
-  // Parse 12-hour format (e.g., "2:30 PM")
   const match = time.match(/^(\d+):(\d+)\s*(AM|PM)$/i);
   if (!match) return time;
   
   let [_, hours, minutes, period] = match;
   let hour = parseInt(hours, 10);
   
-  // Convert to 24-hour format
   if (period.toUpperCase() === 'PM' && hour < 12) hour += 12;
   if (period.toUpperCase() === 'AM' && hour === 12) hour = 0;
   
@@ -168,82 +202,55 @@ export const getNext30Days = () => {
 /**
  * Parses webhook response and formats time slots
  * @param data Response data from webhook
+ * @param selectedDateISO Selected date in ISO format (YYYY-MM-DD)
  * @returns Array of formatted time slots
  */
-export const parseWebhookTimeSlots = (data: any): { time: string, available: boolean }[] => {
+export const parseWebhookTimeSlots = (data: any, selectedDateISO: string): { time: string, available: boolean }[] => {
   try {
-    const bookedTimes = new Set();
-    
-    // Default to business hours for the current day
-    const dayOfWeek = new Date().getDay();
-    const { start, end } = BUSINESS_HOURS[dayOfWeek as keyof typeof BUSINESS_HOURS];
-    
-    // If the response contains an array of events
-    if (data && data.items && Array.isArray(data.items)) {
-      data.items.forEach((event: any) => {
-        if (event.start && event.start.dateTime && event.end && event.end.dateTime) {
-          const startDate = new Date(event.start.dateTime);
-          const endDate = new Date(event.end.dateTime);
-          const durationMinutes = (endDate.getTime() - startDate.getTime()) / (1000 * 60);
-          
-          // Add all 15-minute slots within the event duration
-          for (let i = 0; i < durationMinutes; i += 15) {
-            const slotDate = new Date(startDate.getTime() + i * 60 * 1000);
-            const hours = slotDate.getHours().toString().padStart(2, '0');
-            const minutes = slotDate.getMinutes().toString().padStart(2, '0');
-            const time = `${hours}:${minutes}`;
-            bookedTimes.add(time);
-          }
-        }
-      });
+    // Normalize the response into an events array
+    const events = Array.isArray(data) ? data : 
+      data?.bookedTimes?.map((time: string) => ({ start: { dateTime: time } })) || [];
+
+    if (!events.length || !selectedDateISO) {
+      return generateDefaultTimeSlots();
     }
-    // If it's a single event response
-    else if (data && data.start && data.start.dateTime && data.end && data.end.dateTime) {
-      const startDate = new Date(data.start.dateTime);
-      const endDate = new Date(data.end.dateTime);
-      const durationMinutes = (endDate.getTime() - startDate.getTime()) / (1000 * 60);
+    
+    const bookedTimesByDate: Record<string, Set<string>> = {};
+    
+    events.forEach((event: any) => {
+      if (!event.start || !event.start.dateTime) return;
       
-      // Add all 15-minute slots within the event duration
-      for (let i = 0; i < durationMinutes; i += 15) {
-        const slotDate = new Date(startDate.getTime() + i * 60 * 1000);
-        const hours = slotDate.getHours().toString().padStart(2, '0');
-        const minutes = slotDate.getMinutes().toString().padStart(2, '0');
-        const time = `${hours}:${minutes}`;
-        bookedTimes.add(time);
+      const eventStart = new Date(event.start.dateTime);
+      const eventDateISO = eventStart.toISOString().split('T')[0];
+      
+      if (!bookedTimesByDate[eventDateISO]) {
+        bookedTimesByDate[eventDateISO] = new Set();
       }
-    }
-    // If the response contains a simple array of booked times
-    else if (data && data.bookedTimes && Array.isArray(data.bookedTimes)) {
-      data.bookedTimes.forEach((time: string) => {
-        bookedTimes.add(time.includes('M') ? formatTimeForStorage(time) : time);
-      });
-    }
+      
+      const startTime = eventStart.toISOString().substring(11, 16);
+      bookedTimesByDate[eventDateISO].add(startTime);
+    });
     
-    // Generate all possible time slots and mark booked ones as unavailable
-    const allTimeSlots = [];
+    // Get booked times for the selected date
+    const bookedTimes = bookedTimesByDate[selectedDateISO] || new Set();
     
-    // Generate slots based on business hours
+    // Get business hours for the selected date
+    const selectedDay = new Date(selectedDateISO).getDay();
+    const { start, end } = BUSINESS_HOURS[selectedDay as keyof typeof BUSINESS_HOURS];
+
+    // Generate time slots for the selected date's business hours
+    const slots = [];
     for (let hour = start; hour < end; hour++) {
-      const displayHour = hour.toString().padStart(2, '0');
-      
-      // Generate slots in 15-minute intervals
-      for (let minute = 0; minute < 60; minute += 15) {
-        const time = `${displayHour}:${minute.toString().padStart(2, '0')}`;
-        allTimeSlots.push({
-          time,
-          available: !bookedTimes.has(time)
-        });
+      for (let minute = 0; minute < 60; minute += 30) {
+        const time = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+        slots.push({ time, available: !bookedTimes.has(time) });
       }
     }
     
-    return allTimeSlots.map(slot => ({
-      time: slot.time,
-      available: !bookedTimes.has(slot.time)
-    }));
+    return slots;
   } catch (error) {
     console.error('Error parsing webhook response:', error);
-    // Return empty array instead of default slots on error
-    return [];
+    return generateDefaultTimeSlots();
   }
 };
 
